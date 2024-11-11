@@ -773,6 +773,9 @@ pub struct LoginInfo {
 
 #[allow(unused)]
 pub fn to_login_info(json: String) -> Result<LoginInfo> {
+
+    println!("to_login_info json: {json}");
+
     let value = &serde_json::from_str::<Value>(&json)?;
     let code: i32 = get_val!(value, "code")?;
     if code.eq(&200) {

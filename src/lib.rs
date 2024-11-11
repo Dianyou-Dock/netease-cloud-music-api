@@ -12,7 +12,7 @@ use isahc::{prelude::*, *};
 use lazy_static::lazy_static;
 pub use model::*;
 use regex::Regex;
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, time::Duration};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 use urlqstring::QueryParams;
 
 lazy_static! {
@@ -46,7 +46,7 @@ const USER_AGENT_LIST: [&str; 14] = [
 #[derive(Clone)]
 pub struct MusicApi {
     client: HttpClient,
-    csrf: RefCell<String>,
+    csrf: String,
 }
 
 #[allow(unused)]
@@ -73,7 +73,7 @@ impl MusicApi {
             .expect("初始化网络请求失败!");
         Self {
             client,
-            csrf: RefCell::new(String::new()),
+            csrf: String::new(),
         }
     }
 
@@ -88,12 +88,12 @@ impl MusicApi {
             .expect("初始化网络请求失败!");
         Self {
             client,
-            csrf: RefCell::new(String::new()),
+            csrf: String::new(),
         }
     }
 
     #[allow(unused)]
-    pub fn cookie_jar(&self) -> Option<&CookieJar> {
+    pub fn cookie_jar(&mut self) -> Option<&CookieJar> {
         self.client.cookie_jar()
     }
 
@@ -135,7 +135,7 @@ impl MusicApi {
     /// ua: 要使用的 USER_AGENT_LIST
     /// append_csrf: 是否在路径中添加 csrf
     async fn request(
-        &self,
+        &mut self,
         method: Method,
         path: &str,
         params: HashMap<&str, &str>,
@@ -143,13 +143,13 @@ impl MusicApi {
         ua: &str,
         append_csrf: bool,
     ) -> Result<String> {
-        let mut csrf = self.csrf.borrow().to_owned();
+        let mut csrf = self.csrf.clone();
         if csrf.is_empty() {
             if let Some(cookies) = self.cookie_jar() {
                 let uri = BASE_URL.parse().unwrap();
                 if let Some(cookie) = cookies.get_by_name(&uri, "__csrf") {
                     let __csrf = cookie.value().to_string();
-                    self.csrf.replace(__csrf.to_owned());
+                    self.csrf = __csrf.clone();
                     csrf = __csrf;
                 }
             }
@@ -223,9 +223,9 @@ impl MusicApi {
     /// username: 用户名(邮箱或手机)
     /// password: 密码
     #[allow(unused)]
-    pub async fn login(&self, username: String, password: String) -> Result<LoginInfo> {
+    pub async fn login(&mut self, username: String, password: String, real_ip: Option<String>) -> Result<LoginInfo> {
         let mut params = HashMap::new();
-        let path;
+        let mut path;
         if username.len().eq(&11) && username.parse::<u64>().is_ok() {
             path = "/weapi/login/cellphone";
             params.insert("phone", &username[..]);
@@ -240,6 +240,17 @@ impl MusicApi {
             params.insert("rememberLogin", "true");
             params.insert("clientToken", client_token);
         }
+
+        let real_ip = if let Some(real_ip) = real_ip {
+            real_ip
+        } else {
+            "".to_string()
+        };
+
+        if !real_ip.is_empty() {
+            params.insert("realIp", &real_ip[..]);
+        }
+
         let result = self
             .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
             .await?;
@@ -252,7 +263,7 @@ impl MusicApi {
     /// captcha: 验证码
     #[allow(unused)]
     pub async fn login_cellphone(
-        &self,
+        &mut self,
         ctcode: String,
         phone: String,
         captcha: String,
@@ -273,7 +284,7 @@ impl MusicApi {
     /// ctcode: 国家码，用于国外手机号登录
     /// phone: 手机号码
     #[allow(unused)]
-    pub async fn captcha(&self, ctcode: String, phone: String) -> Result<()> {
+    pub async fn captcha(&mut self, ctcode: String, phone: String) -> Result<()> {
         let path = "/weapi/sms/captcha/sent";
         let mut params = HashMap::new();
         params.insert("cellphone", &phone[..]);
@@ -287,7 +298,7 @@ impl MusicApi {
     /// 创建登陆二维码链接
     /// 返回(qr_url, unikey)
     #[allow(unused)]
-    pub async fn login_qr_create(&self) -> Result<(String, String)> {
+    pub async fn login_qr_create(&mut self) -> Result<(String, String)> {
         let path = "/weapi/login/qrcode/unikey";
         let mut params = HashMap::new();
         params.insert("type", "1");
@@ -304,7 +315,7 @@ impl MusicApi {
     /// 检查登陆二维码
     /// key: 由 login_qr_create 生成的 unikey
     #[allow(unused)]
-    pub async fn login_qr_check(&self, key: String) -> Result<Msg> {
+    pub async fn login_qr_check(&mut self, key: String) -> Result<Msg> {
         let path = "/weapi/login/qrcode/client/login";
         let mut params = HashMap::new();
         params.insert("type", "1");
@@ -317,7 +328,7 @@ impl MusicApi {
 
     /// 登录状态
     #[allow(unused)]
-    pub async fn login_status(&self) -> Result<LoginInfo> {
+    pub async fn login_status(&mut self) -> Result<LoginInfo> {
         let path = "/api/nuser/account/get";
         let result = self
             .request(
@@ -334,7 +345,7 @@ impl MusicApi {
 
     /// 退出
     #[allow(unused)]
-    pub async fn logout(&self) {
+    pub async fn logout(&mut self) {
         let path = "https://music.163.com/weapi/logout";
         self.request(
             Method::Post,
@@ -349,7 +360,7 @@ impl MusicApi {
 
     /// 每日签到
     #[allow(unused)]
-    pub async fn daily_task(&self) -> Result<Msg> {
+    pub async fn daily_task(&mut self) -> Result<Msg> {
         let path = "/weapi/point/dailyTask";
         let mut params = HashMap::new();
         params.insert("type", "0");
@@ -362,7 +373,7 @@ impl MusicApi {
     /// 用户喜欢音乐id列表
     /// uid: 用户id
     #[allow(unused)]
-    pub async fn user_song_id_list(&self, uid: u64) -> Result<Vec<u64>> {
+    pub async fn user_song_id_list(&mut self, uid: u64) -> Result<Vec<u64>> {
         let path = "/weapi/song/like/get";
         let mut params = HashMap::new();
         let uid = uid.to_string();
@@ -378,7 +389,7 @@ impl MusicApi {
     /// offset: 列表起点号
     /// limit: 列表长度
     #[allow(unused)]
-    pub async fn user_song_list(&self, uid: u64, offset: u16, limit: u16) -> Result<Vec<SongList>> {
+    pub async fn user_song_list(&mut self, uid: u64, offset: u16, limit: u16) -> Result<Vec<SongList>> {
         let path = "/weapi/user/playlist";
         let mut params = HashMap::new();
         let uid = uid.to_string();
@@ -397,7 +408,7 @@ impl MusicApi {
     /// offset: 列表起点号
     /// limit: 列表长度
     #[allow(unused)]
-    pub async fn album_sublist(&self, offset: u16, limit: u16) -> Result<Vec<SongList>> {
+    pub async fn album_sublist(&mut self, offset: u16, limit: u16) -> Result<Vec<SongList>> {
         let path = "/weapi/album/sublist";
         let mut params = HashMap::new();
         let offset = offset.to_string();
@@ -414,7 +425,7 @@ impl MusicApi {
 
     /// 用户云盘
     #[allow(unused)]
-    pub async fn user_cloud_disk(&self) -> Result<Vec<SongInfo>> {
+    pub async fn user_cloud_disk(&mut self) -> Result<Vec<SongInfo>> {
         let path = "/weapi/v1/cloud/get";
         let mut params = HashMap::new();
         params.insert("offset", "0");
@@ -428,8 +439,8 @@ impl MusicApi {
     /// 歌单详情
     /// songlist_id: 歌单 id
     #[allow(unused)]
-    pub async fn song_list_detail(&self, songlist_id: u64) -> Result<PlayListDetail> {
-        let csrf_token = self.csrf.borrow().to_owned();
+    pub async fn song_list_detail(&mut self, songlist_id: u64) -> Result<PlayListDetail> {
+        let csrf_token = self.csrf.clone();
         let path = "/weapi/v6/playlist/detail";
         let mut params = HashMap::new();
         let songlist_id = songlist_id.to_string();
@@ -448,7 +459,7 @@ impl MusicApi {
     /// 歌曲详情
     /// ids: 歌曲 id 列表
     #[allow(unused)]
-    pub async fn songs_detail(&self, ids: &[u64]) -> Result<Vec<SongInfo>> {
+    pub async fn songs_detail(&mut self, ids: &[u64]) -> Result<Vec<SongInfo>> {
         let path = "/weapi/v3/song/detail";
         let mut params = HashMap::new();
         let c = ids
@@ -473,7 +484,7 @@ impl MusicApi {
     ///    sq: 999000
     ///    hr: 1900000
     #[allow(unused)]
-    pub async fn songs_url(&self, ids: &[u64], br: &str) -> Result<Vec<SongUrl>> {
+    pub async fn songs_url(&mut self, ids: &[u64], br: &str) -> Result<Vec<SongUrl>> {
         // 使用 WEBAPI 获取音乐
         // let csrf_token = self.csrf.borrow().to_owned();
         // let path = "/weapi/song/enhance/player/url/v1";
@@ -501,7 +512,7 @@ impl MusicApi {
 
     /// 每日推荐歌单
     #[allow(unused)]
-    pub async fn recommend_resource(&self) -> Result<Vec<SongList>> {
+    pub async fn recommend_resource(&mut self) -> Result<Vec<SongList>> {
         let path = "/weapi/v1/discovery/recommend/resource";
         let result = self
             .request(
@@ -518,7 +529,7 @@ impl MusicApi {
 
     /// 每日推荐歌曲
     #[allow(unused)]
-    pub async fn recommend_songs(&self) -> Result<Vec<SongInfo>> {
+    pub async fn recommend_songs(&mut self) -> Result<Vec<SongInfo>> {
         let path = "/weapi/v2/discovery/recommend/songs";
         let mut params = HashMap::new();
         params.insert("total", "ture");
@@ -530,7 +541,7 @@ impl MusicApi {
 
     /// 私人FM
     #[allow(unused)]
-    pub async fn personal_fm(&self) -> Result<Vec<SongInfo>> {
+    pub async fn personal_fm(&mut self) -> Result<Vec<SongInfo>> {
         let path = "/weapi/v1/radio/get";
         let result = self
             .request(
@@ -549,7 +560,7 @@ impl MusicApi {
     /// songid: 歌曲id
     /// like: true 收藏，false 取消
     #[allow(unused)]
-    pub async fn like(&self, like: bool, songid: u64) -> bool {
+    pub async fn like(&mut self, like: bool, songid: u64) -> bool {
         let path = "/weapi/radio/like";
         let mut params = HashMap::new();
         let songid = songid.to_string();
@@ -576,7 +587,7 @@ impl MusicApi {
     /// FM 不喜欢
     /// songid: 歌曲id
     #[allow(unused)]
-    pub async fn fm_trash(&self, songid: u64) -> bool {
+    pub async fn fm_trash(&mut self, songid: u64) -> bool {
         let path = "/weapi/radio/trash/add";
         let mut params = HashMap::new();
         let songid = songid.to_string();
@@ -605,7 +616,7 @@ impl MusicApi {
     /// limit: 数量
     #[allow(unused)]
     pub async fn search(
-        &self,
+        &mut self,
         keywords: String,
         types: u32,
         offset: u16,
@@ -630,7 +641,7 @@ impl MusicApi {
     /// limit: 数量
     #[allow(unused)]
     pub async fn search_song(
-        &self,
+        &mut self,
         keywords: String,
         offset: u16,
         limit: u16,
@@ -645,7 +656,7 @@ impl MusicApi {
     /// limit: 数量
     #[allow(unused)]
     pub async fn search_singer(
-        &self,
+        &mut self,
         keywords: String,
         offset: u16,
         limit: u16,
@@ -660,7 +671,7 @@ impl MusicApi {
     /// limit: 数量
     #[allow(unused)]
     pub async fn search_album(
-        &self,
+        &mut self,
         keywords: String,
         offset: u16,
         limit: u16,
@@ -675,7 +686,7 @@ impl MusicApi {
     /// limit: 数量
     #[allow(unused)]
     pub async fn search_songlist(
-        &self,
+        &mut self,
         keywords: String,
         offset: u16,
         limit: u16,
@@ -690,7 +701,7 @@ impl MusicApi {
     /// limit: 数量
     #[allow(unused)]
     pub async fn search_lyrics(
-        &self,
+        &mut self,
         keywords: String,
         offset: u16,
         limit: u16,
@@ -702,7 +713,7 @@ impl MusicApi {
     /// 获取歌手热门单曲
     /// id: 歌手 ID
     #[allow(unused)]
-    pub async fn singer_songs(&self, id: u64) -> Result<Vec<SongInfo>> {
+    pub async fn singer_songs(&mut self, id: u64) -> Result<Vec<SongInfo>> {
         let path = format!("/weapi/v1/artist/{}", id);
         let mut params = HashMap::new();
         let result = self
@@ -720,7 +731,7 @@ impl MusicApi {
     /// limit: 数量
     #[allow(unused)]
     pub async fn singer_all_songs(
-        &self,
+        &mut self,
         id: u64,
         order: &str,
         offset: u16,
@@ -748,7 +759,7 @@ impl MusicApi {
     /// limit: 数量
     /// area: ALL:全部,ZH:华语,EA:欧美,KR:韩国,JP:日本
     #[allow(unused)]
-    pub async fn new_albums(&self, area: &str, offset: u16, limit: u16) -> Result<Vec<SongList>> {
+    pub async fn new_albums(&mut self, area: &str, offset: u16, limit: u16) -> Result<Vec<SongList>> {
         let path = "/weapi/album/new";
         let mut params = HashMap::new();
         let offset = offset.to_string();
@@ -766,7 +777,7 @@ impl MusicApi {
     /// 专辑
     /// album_id: 专辑 id
     #[allow(unused)]
-    pub async fn album(&self, album_id: u64) -> Result<AlbumDetail> {
+    pub async fn album(&mut self, album_id: u64) -> Result<AlbumDetail> {
         let path = format!("/weapi/v1/album/{}", album_id);
         let result = self
             .request(
@@ -784,7 +795,7 @@ impl MusicApi {
     /// 歌单动态信息
     /// songlist_id: 歌单 id
     #[allow(unused)]
-    pub async fn songlist_detail_dynamic(&self, songlist_id: u64) -> Result<PlayListDetailDynamic> {
+    pub async fn songlist_detail_dynamic(&mut self, songlist_id: u64) -> Result<PlayListDetailDynamic> {
         let path = "/weapi/playlist/detail/dynamic";
         let mut params = HashMap::new();
         let id = songlist_id.to_string();
@@ -798,7 +809,7 @@ impl MusicApi {
     /// 专辑动态信息
     /// album_id: 专辑 id
     #[allow(unused)]
-    pub async fn album_detail_dynamic(&self, album_id: u64) -> Result<AlbumDetailDynamic> {
+    pub async fn album_detail_dynamic(&mut self, album_id: u64) -> Result<AlbumDetailDynamic> {
         let path = "/weapi/album/detail/dynamic";
         let mut params = HashMap::new();
         let id = album_id.to_string();
@@ -818,7 +829,7 @@ impl MusicApi {
     /// cat: 全部,华语,欧美,日语,韩语,粤语,小语种,流行,摇滚,民谣,电子,舞曲,说唱,轻音乐,爵士,乡村,R&B/Soul,古典,民族,英伦,金属,朋克,蓝调,雷鬼,世界音乐,拉丁,另类/独立,New Age,古风,后摇,Bossa Nova,清晨,夜晚,学习,工作,午休,下午茶,地铁,驾车,运动,旅行,散步,酒吧,怀旧,清新,浪漫,性感,伤感,治愈,放松,孤独,感动,兴奋,快乐,安静,思念,影视原声,ACG,儿童,校园,游戏,70后,80后,90后,网络歌曲,KTV,经典,翻唱,吉他,钢琴,器乐,榜单,00后
     #[allow(unused)]
     pub async fn top_song_list(
-        &self,
+        &mut self,
         cat: &str,
         order: &str,
         offset: u16,
@@ -845,7 +856,7 @@ impl MusicApi {
     /// cat: 全部,华语,欧美,韩语,日语,粤语,小语种,运动,ACG,影视原声,流行,摇滚,后摇,古风,民谣,轻音乐,电子,器乐,说唱,古典,爵士
     #[allow(unused)]
     pub async fn top_song_list_highquality(
-        &self,
+        &mut self,
         cat: &str,
         lasttime: u8,
         limit: u8,
@@ -866,7 +877,7 @@ impl MusicApi {
 
     /// 获取排行榜
     #[allow(unused)]
-    pub async fn toplist(&self) -> Result<Vec<TopList>> {
+    pub async fn toplist(&mut self) -> Result<Vec<TopList>> {
         let path = "/api/toplist";
         let mut params = HashMap::new();
         let res = self
@@ -897,15 +908,15 @@ impl MusicApi {
     /// 香港电台中文歌曲龙虎榜: 10169002
     /// 华语金曲榜: 4395559
     #[allow(unused)]
-    pub async fn top_songs(&self, list_id: u64) -> Result<PlayListDetail> {
+    pub async fn top_songs(&mut self, list_id: u64) -> Result<PlayListDetail> {
         self.song_list_detail(list_id).await
     }
 
     /// 查询歌词
     /// music_id: 歌曲id
     #[allow(unused)]
-    pub async fn song_lyric(&self, music_id: u64) -> Result<Lyrics> {
-        let csrf_token = self.csrf.borrow().to_owned();
+    pub async fn song_lyric(&mut self, music_id: u64) -> Result<Lyrics> {
+        let csrf_token = self.csrf.clone();
         let path = "/weapi/song/lyric";
         let mut params = HashMap::new();
         let id = music_id.to_string();
@@ -923,7 +934,7 @@ impl MusicApi {
     /// like: true 收藏，false 取消
     /// id: 歌单 id
     #[allow(unused)]
-    pub async fn song_list_like(&self, like: bool, id: u64) -> bool {
+    pub async fn song_list_like(&mut self, like: bool, id: u64) -> bool {
         let path = if like {
             "/weapi/playlist/subscribe"
         } else {
@@ -951,7 +962,7 @@ impl MusicApi {
     /// like: true 收藏，false 取消
     /// id: 歌单 id
     #[allow(unused)]
-    pub async fn album_like(&self, like: bool, id: u64) -> bool {
+    pub async fn album_like(&mut self, like: bool, id: u64) -> bool {
         let path = if like {
             "/api/album/sub"
         } else {
@@ -978,7 +989,7 @@ impl MusicApi {
 
     /// 获取 APP 首页信息
     #[allow(unused)]
-    pub async fn homepage(&self, client_type: ClientType) -> Result<String> {
+    pub async fn homepage(&mut self, client_type: ClientType) -> Result<String> {
         let path = "/api/homepage/block/page";
         let mut params = HashMap::new();
         params.insert("refresh", "false");
@@ -989,7 +1000,7 @@ impl MusicApi {
 
     /// 获取首页轮播图
     #[allow(unused)]
-    pub async fn banners(&self) -> Result<Vec<BannersInfo>> {
+    pub async fn banners(&mut self) -> Result<Vec<BannersInfo>> {
         let path = "/weapi/v2/banner/get";
         let mut params = HashMap::new();
         params.insert("clientType", "pc");
@@ -1005,7 +1016,7 @@ impl MusicApi {
     /// width: 宽度
     /// high: 高度
     #[allow(unused)]
-    pub async fn download_img<I>(&self, url: I, path: PathBuf, width: u16, high: u16) -> Result<()>
+    pub async fn download_img<I>(&mut self, url: I, path: PathBuf, width: u16, high: u16) -> Result<()>
     where
         I: Into<String>,
     {
@@ -1027,7 +1038,7 @@ impl MusicApi {
     /// url: 网址
     /// path: 本地保存路径(包含文件名)
     #[allow(unused)]
-    pub async fn download_song<I>(&self, url: I, path: PathBuf) -> Result<()>
+    pub async fn download_song<I>(&mut self, url: I, path: PathBuf) -> Result<()>
     where
         I: Into<String>,
     {
@@ -1046,7 +1057,7 @@ impl MusicApi {
     /// offset: 列表起点号
     /// limit: 列表长度
     #[allow(unused)]
-    pub async fn user_radio_sublist(&self, offset: u16, limit: u16) -> Result<Vec<SongList>> {
+    pub async fn user_radio_sublist(&mut self, offset: u16, limit: u16) -> Result<Vec<SongList>> {
         let path = "/weapi/djradio/get/subed";
         let mut params = HashMap::new();
         let offset = offset.to_string();
@@ -1065,7 +1076,7 @@ impl MusicApi {
     /// offset: 列表起点号
     /// limit: 列表长度
     #[allow(unused)]
-    pub async fn radio_program(&self, rid: u64, offset: u16, limit: u16) -> Result<Vec<SongInfo>> {
+    pub async fn radio_program(&mut self, rid: u64, offset: u16, limit: u16) -> Result<Vec<SongInfo>> {
         let path = "/weapi/dj/program/byradio";
         let mut params = HashMap::new();
         let id = rid.to_string();
@@ -1085,7 +1096,7 @@ impl MusicApi {
     /// song_id: 歌曲ID
     /// playlist_id: 歌单ID
     #[allow(unused)]
-    pub async fn playmode_intelligence_list(&self, sid: u64, pid: u64) -> Result<Vec<SongInfo>> {
+    pub async fn playmode_intelligence_list(&mut self, sid: u64, pid: u64) -> Result<Vec<SongInfo>> {
         let path = "/weapi/playmode/intelligence/list";
         let mut params = HashMap::new();
         let id = sid.to_string();
@@ -1122,7 +1133,7 @@ mod tests {
 
     #[async_std::test]
     async fn test() {
-        let api = MusicApi::default();
+        let mut api = MusicApi::default();
         assert!(api.banners().await.is_ok());
     }
 }
