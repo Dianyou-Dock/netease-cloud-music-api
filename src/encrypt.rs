@@ -48,7 +48,7 @@ impl Crypto {
         let message = format!("nobody{}use{}md5forencrypt", url, text);
         let digest = hex::encode(hash(MessageDigest::md5(), message.as_bytes()).unwrap());
         let data = format!("{}-36cd479b6b5-{}-36cd479b6b5-{}", url, text, digest);
-        let params = Crypto::aes_encrypt(&data, &EAPIKEY, ecb, Some(&*IV), |t: &Vec<u8>| {
+        let params = Crypto::aes_encrypt(&data, &EAPIKEY, ecb, None, |t: &Vec<u8>| {
             hex::encode_upper(t)
         });
         QueryParams::from(vec![("params", params.as_str())]).stringify()
