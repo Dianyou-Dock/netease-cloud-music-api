@@ -115,10 +115,10 @@ impl MusicApi {
         }
     }
 
-    // #[allow(unused)]
-    // pub fn cookie_jar(&mut self) -> Option<&CookieJar> {
-    //     self.client
-    // }
+    #[allow(unused)]
+    pub fn cookie_jar(&mut self) -> Option<Arc<Jar>> {
+        self.cookie_store.clone()
+    }
 
     // 设置使用代理
     // proxy: 代理地址，支持以下协议
