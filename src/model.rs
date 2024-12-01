@@ -944,7 +944,7 @@ pub fn to_album_detail_dynamic(json: String) -> Result<AlbumDetailDynamic> {
 /// 请求方式
 #[allow(unused)]
 #[derive(Debug)]
-pub enum Method {
+pub enum Method2 {
     Post,
     Get,
 }

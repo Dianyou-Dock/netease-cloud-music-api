@@ -9,12 +9,15 @@ mod no_openssl_encrypt;
 
 use anyhow::{anyhow, Result};
 use encrypt::Crypto;
-pub use isahc::cookies::{CookieBuilder, CookieJar};
-use isahc::{prelude::*, *};
+// pub use isahc::cookies::{CookieBuilder, CookieJar};
+// use isahc::{prelude::*, *};
 use lazy_static::lazy_static;
 pub use model::*;
 use regex::Regex;
 use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::sync::Arc;
+use reqwest::cookie::{CookieStore, Jar};
+use reqwest::Method;
 use urlqstring::QueryParams;
 
 lazy_static! {
@@ -47,7 +50,8 @@ const USER_AGENT_LIST: [&str; 14] = [
 
 #[derive(Clone)]
 pub struct MusicApi {
-    client: HttpClient,
+    client: reqwest::Client,
+    cookie_store: Option<Arc<Jar>>,
     csrf: String,
 }
 
@@ -67,67 +71,84 @@ impl Default for MusicApi {
 impl MusicApi {
     #[allow(unused)]
     pub fn new(max_cons: usize) -> Self {
-        let client = HttpClient::builder()
+        let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(TIMEOUT))
-            .max_connections(max_cons)
-            .cookies()
+            .pool_max_idle_per_host(max_cons)
+            .cookie_store(true)
             .build()
             .expect("初始化网络请求失败!");
+
+        // let client = HttpClient::builder()
+        //     .timeout(Duration::from_secs(TIMEOUT))
+        //     .max_connections(max_cons)
+        //     .cookies()
+        //     .build()
+        //     .expect("初始化网络请求失败!");
         Self {
             client,
             csrf: String::new(),
+            cookie_store: None,
         }
     }
 
     #[allow(unused)]
-    pub fn from_cookie_jar(cookie_jar: CookieJar, max_cons: usize) -> Self {
-        let client = HttpClient::builder()
+    pub fn from_cookie_jar(cookie_jar: Arc<Jar>, max_cons: usize) -> Self {
+
+        let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(TIMEOUT))
-            .max_connections(max_cons)
-            .cookies()
-            .cookie_jar(cookie_jar)
+            .pool_max_idle_per_host(max_cons)
+            .cookie_store(true)
+            .cookie_provider(cookie_jar.clone())
             .build()
             .expect("初始化网络请求失败!");
+        // let client = HttpClient::builder()
+        //     .timeout(Duration::from_secs(TIMEOUT))
+        //     .max_connections(max_cons)
+        //     .cookies()
+        //     .cookie_jar(cookie_jar)
+        //     .build()
+        //     .expect("初始化网络请求失败!");
         Self {
             client,
             csrf: String::new(),
+            cookie_store: Some(cookie_jar),
         }
     }
 
-    #[allow(unused)]
-    pub fn cookie_jar(&mut self) -> Option<&CookieJar> {
-        self.client.cookie_jar()
-    }
+    // #[allow(unused)]
+    // pub fn cookie_jar(&mut self) -> Option<&CookieJar> {
+    //     self.client
+    // }
 
-    /// 设置使用代理
-    /// proxy: 代理地址，支持以下协议
-    ///   - http: Proxy. Default when no scheme is specified.
-    ///   - https: HTTPS Proxy. (Added in 7.52.0 for OpenSSL, GnuTLS and NSS)
-    ///   - socks4: SOCKS4 Proxy.
-    ///   - socks4a: SOCKS4a Proxy. Proxy resolves URL hostname.
-    ///   - socks5: SOCKS5 Proxy.
-    ///   - socks5h: SOCKS5 Proxy. Proxy resolves URL hostname.
-    pub fn set_proxy(&mut self, proxy: &str) -> Result<()> {
-        if let Some(cookie_jar) = self.client.cookie_jar() {
-            let client = HttpClient::builder()
-                .timeout(Duration::from_secs(TIMEOUT))
-                .proxy(Some(proxy.parse()?))
-                .cookies()
-                .cookie_jar(cookie_jar.to_owned())
-                .build()
-                .expect("初始化网络请求失败!");
-            self.client = client;
-        } else {
-            let client = HttpClient::builder()
-                .timeout(Duration::from_secs(TIMEOUT))
-                .proxy(Some(proxy.parse()?))
-                .cookies()
-                .build()
-                .expect("初始化网络请求失败!");
-            self.client = client;
-        }
-        Ok(())
-    }
+    // 设置使用代理
+    // proxy: 代理地址，支持以下协议
+    //   - http: Proxy. Default when no scheme is specified.
+    //   - https: HTTPS Proxy. (Added in 7.52.0 for OpenSSL, GnuTLS and NSS)
+    //   - socks4: SOCKS4 Proxy.
+    //   - socks4a: SOCKS4a Proxy. Proxy resolves URL hostname.
+    //   - socks5: SOCKS5 Proxy.
+    //   - socks5h: SOCKS5 Proxy. Proxy resolves URL hostname.
+    // pub fn set_proxy(&mut self, proxy: &str) -> Result<()> {
+    //     if let Some(cookie_jar) = self.client.cookie_jar() {
+    //         let client = HttpClient::builder()
+    //             .timeout(Duration::from_secs(TIMEOUT))
+    //             .proxy(Some(proxy.parse()?))
+    //             .cookies()
+    //             .cookie_jar(cookie_jar.to_owned())
+    //             .build()
+    //             .expect("初始化网络请求失败!");
+    //         self.client = client;
+    //     } else {
+    //         let client = HttpClient::builder()
+    //             .timeout(Duration::from_secs(TIMEOUT))
+    //             .proxy(Some(proxy.parse()?))
+    //             .cookies()
+    //             .build()
+    //             .expect("初始化网络请求失败!");
+    //         self.client = client;
+    //     }
+    //     Ok(())
+    // }
 
     /// 发送请求
     /// method: 请求方法
@@ -147,12 +168,19 @@ impl MusicApi {
     ) -> Result<String> {
         let mut csrf = self.csrf.clone();
         if csrf.is_empty() {
-            if let Some(cookies) = self.cookie_jar() {
+            if let Some(cookies) = &self.cookie_store {
                 let uri = BASE_URL.parse().unwrap();
-                if let Some(cookie) = cookies.get_by_name(&uri, "__csrf") {
-                    let __csrf = cookie.value().to_string();
-                    self.csrf = __csrf.clone();
-                    csrf = __csrf;
+                if let Some(header) = cookies.cookies(&uri) {
+                    let header_str = header.to_str()?;
+                    let split_header: Vec<&str> = header_str.split(';').collect();
+                    for x in split_header {
+                        if x.contains("__csrf") {
+                            let key_val = x.split('=').collect::<Vec<&str>>();
+                            self.csrf = key_val[1].to_string();
+                            csrf = self.csrf.clone();
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -161,7 +189,7 @@ impl MusicApi {
             url = format!("{}{}", BASE_URL, path);
         }
         match method {
-            Method::Post => {
+            Method::POST => {
                 let user_agent = match cryptoapi {
                     CryptoApi::LinuxApi => LINUX_USER_AGNET.to_string(),
                     CryptoApi::Weapi => choose_user_agent(ua).to_string(),
@@ -192,7 +220,7 @@ impl MusicApi {
                     }
                 };
 
-                let request = Request::post(&url)
+                let request = self.client.request(Method::POST, &url)
                     .header("Cookie", "os=pc; appver=2.7.1.198277")
                     .header("Accept", "*/*")
                     .header("Accept-Language", "en-US,en;q=0.5")
@@ -202,22 +230,26 @@ impl MusicApi {
                     .header("Referer", "https://music.163.com")
                     .header("User-Agent", user_agent)
                     .body(body)
-                    .unwrap();
-                let mut response = self
+                    .build()?;
+                let response = self
                     .client
-                    .send_async(request)
+                    .execute(request)
                     .await
                     .map_err(|_| anyhow!("none"))?;
                 response.text().await.map_err(|_| anyhow!("none"))
             }
-            Method::Get => self
+            Method::GET => self
                 .client
-                .get_async(&url)
+                .get(&url)
+                .send()
                 .await
                 .map_err(|_| anyhow!("none"))?
                 .text()
                 .await
                 .map_err(|_| anyhow!("none")),
+            _ => {
+                Err(anyhow!("not match"))
+            }
         }
     }
 
@@ -254,7 +286,7 @@ impl MusicApi {
         }
 
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_login_info(result)
     }
@@ -277,7 +309,7 @@ impl MusicApi {
         params.insert("captcha", &captcha[..]);
         params.insert("rememberLogin", "true");
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_login_info(result)
     }
@@ -292,7 +324,7 @@ impl MusicApi {
         params.insert("cellphone", &phone[..]);
         params.insert("ctcode", &ctcode[..]);
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_captcha(result)
     }
@@ -305,7 +337,7 @@ impl MusicApi {
         let mut params = HashMap::new();
         params.insert("type", "1");
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         let unikey = to_unikey(result)?;
         Ok((
@@ -323,7 +355,7 @@ impl MusicApi {
         params.insert("type", "1");
         params.insert("key", &key);
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_message(result)
     }
@@ -334,7 +366,7 @@ impl MusicApi {
         let path = "/api/nuser/account/get";
         let result = self
             .request(
-                Method::Post,
+                Method::POST,
                 path,
                 HashMap::new(),
                 CryptoApi::Weapi,
@@ -350,7 +382,7 @@ impl MusicApi {
     pub async fn logout(&mut self) {
         let path = "https://music.163.com/weapi/logout";
         self.request(
-            Method::Post,
+            Method::POST,
             path,
             HashMap::new(),
             CryptoApi::Weapi,
@@ -367,7 +399,7 @@ impl MusicApi {
         let mut params = HashMap::new();
         params.insert("type", "0");
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_msg(result)
     }
@@ -381,7 +413,7 @@ impl MusicApi {
         let uid = uid.to_string();
         params.insert("uid", uid.as_str());
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_id_list(result)
     }
@@ -401,7 +433,7 @@ impl MusicApi {
         params.insert("offset", offset.as_str());
         params.insert("limit", limit.as_str());
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_list(result, Parse::Usl)
     }
@@ -420,7 +452,7 @@ impl MusicApi {
         params.insert("offset", offset.as_str());
         params.insert("limit", limit.as_str());
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_list(result, Parse::LikeAlbum)
     }
@@ -433,7 +465,7 @@ impl MusicApi {
         params.insert("offset", "0");
         params.insert("limit", "10000");
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_info(result, Parse::Ucd)
     }
@@ -453,7 +485,7 @@ impl MusicApi {
         params.insert("n", "1000");
         params.insert("csrf_token", &csrf_token);
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_mix_detail(&serde_json::from_str(&result)?)
     }
@@ -472,7 +504,7 @@ impl MusicApi {
         let c = format!("[{}]", c);
         params.insert("c", &c[..]);
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_info(result, Parse::Usl)
     }
@@ -507,7 +539,7 @@ impl MusicApi {
         params.insert("ids", ids.as_str());
         params.insert("br", br);
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Eapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Eapi, "", true)
             .await?;
         to_song_url(result)
     }
@@ -518,7 +550,7 @@ impl MusicApi {
         let path = "/weapi/v1/discovery/recommend/resource";
         let result = self
             .request(
-                Method::Post,
+                Method::POST,
                 path,
                 HashMap::new(),
                 CryptoApi::Weapi,
@@ -536,7 +568,7 @@ impl MusicApi {
         let mut params = HashMap::new();
         params.insert("total", "ture");
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_info(result, Parse::Rmds)
     }
@@ -547,7 +579,7 @@ impl MusicApi {
         let path = "/weapi/v1/radio/get";
         let result = self
             .request(
-                Method::Post,
+                Method::POST,
                 path,
                 HashMap::new(),
                 CryptoApi::Weapi,
@@ -572,7 +604,7 @@ impl MusicApi {
         params.insert("like", like.as_str());
         params.insert("time", "25");
         if let Ok(result) = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await
         {
             return to_msg(result)
@@ -597,7 +629,7 @@ impl MusicApi {
         params.insert("songId", songid.as_str());
         params.insert("time", "25");
         if let Ok(result) = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await
         {
             return to_msg(result)
@@ -633,7 +665,7 @@ impl MusicApi {
         params.insert("type", &_types[..]);
         params.insert("offset", &offset[..]);
         params.insert("limit", &limit[..]);
-        self.request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+        self.request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await
     }
 
@@ -719,7 +751,7 @@ impl MusicApi {
         let path = format!("/weapi/v1/artist/{}", id);
         let mut params = HashMap::new();
         let result = self
-            .request(Method::Post, &path, params, CryptoApi::Weapi, "", false)
+            .request(Method::POST, &path, params, CryptoApi::Weapi, "", false)
             .await?;
         to_song_info(result, Parse::Singer)
     }
@@ -751,7 +783,7 @@ impl MusicApi {
         params.insert("offset", &offset[..]);
         params.insert("limit", &limit[..]);
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", false)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", false)
             .await?;
         to_song_info(result, Parse::SingerSongs)
     }
@@ -771,7 +803,7 @@ impl MusicApi {
         params.insert("limit", &limit[..]);
         params.insert("total", "true");
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_list(result, Parse::Album)
     }
@@ -783,7 +815,7 @@ impl MusicApi {
         let path = format!("/weapi/v1/album/{}", album_id);
         let result = self
             .request(
-                Method::Post,
+                Method::POST,
                 &path,
                 HashMap::new(),
                 CryptoApi::Weapi,
@@ -803,7 +835,7 @@ impl MusicApi {
         let id = songlist_id.to_string();
         params.insert("id", &id[..]);
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_songlist_detail_dynamic(result)
     }
@@ -817,7 +849,7 @@ impl MusicApi {
         let id = album_id.to_string();
         params.insert("id", &id[..]);
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_album_detail_dynamic(result)
     }
@@ -847,7 +879,7 @@ impl MusicApi {
         params.insert("offset", &offset[..]);
         params.insert("limit", &limit[..]);
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_list(result, Parse::Top)
     }
@@ -872,7 +904,7 @@ impl MusicApi {
         params.insert("lasttime", &lasttime[..]);
         params.insert("limit", &limit[..]);
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_list(result, Parse::Top)
     }
@@ -883,7 +915,7 @@ impl MusicApi {
         let path = "/api/toplist";
         let mut params = HashMap::new();
         let res = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_toplist(res)
     }
@@ -927,7 +959,7 @@ impl MusicApi {
         params.insert("tv", "-1");
         params.insert("csrf_token", &csrf_token);
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_lyric(result)
     }
@@ -946,7 +978,7 @@ impl MusicApi {
         let id = id.to_string();
         params.insert("id", &id[..]);
         if let Ok(result) = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await
         {
             return to_msg(result)
@@ -975,7 +1007,7 @@ impl MusicApi {
         let id = id.to_string();
         params.insert("id", id.as_str());
         if let Ok(result) = self
-            .request(Method::Post, &path, params, CryptoApi::Weapi, "", false)
+            .request(Method::POST, &path, params, CryptoApi::Weapi, "", false)
             .await
         {
             return to_msg(result)
@@ -996,7 +1028,7 @@ impl MusicApi {
         let mut params = HashMap::new();
         params.insert("refresh", "false");
         params.insert("cursor", "null");
-        self.request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+        self.request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await
     }
 
@@ -1007,7 +1039,7 @@ impl MusicApi {
         let mut params = HashMap::new();
         params.insert("clientType", "pc");
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_banners_info(result)
     }
@@ -1026,11 +1058,10 @@ impl MusicApi {
             let url = url.into();
             let image_url = format!("{}?param={}y{}", url, width, high);
 
-            let mut response = self.client.get_async(image_url).await?;
+            let mut response = self.client.get(image_url).send().await?;
             if response.status().is_success() {
-                let mut buf = vec![];
-                response.copy_to(&mut buf).await?;
-                std::fs::write(&path, buf)?;
+                let mut buf = response.bytes().await?;
+                std::fs::write(&path, buf.to_vec())?;
             }
         }
         Ok(())
@@ -1045,11 +1076,10 @@ impl MusicApi {
         I: Into<String>,
     {
         if !path.exists() {
-            let mut response = self.client.get_async(url.into()).await?;
+            let mut response = self.client.get(url.into()).send().await?;
             if response.status().is_success() {
-                let mut buf = vec![];
-                response.copy_to(&mut buf).await?;
-                std::fs::write(&path, buf)?;
+                let buf = response.bytes().await?;
+                std::fs::write(&path, buf.to_vec())?;
             }
         }
         Ok(())
@@ -1068,7 +1098,7 @@ impl MusicApi {
         params.insert("offset", offset.as_str());
         params.insert("limit", limit.as_str());
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_list(result, Parse::Radio)
     }
@@ -1089,7 +1119,7 @@ impl MusicApi {
         params.insert("limit", limit.as_str());
         params.insert("asc", "false");
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_info(result, Parse::Radio)
     }
@@ -1109,7 +1139,7 @@ impl MusicApi {
         params.insert("startMusicId", id.as_str());
         params.insert("count", "1");
         let result = self
-            .request(Method::Post, path, params, CryptoApi::Weapi, "", true)
+            .request(Method::POST, path, params, CryptoApi::Weapi, "", true)
             .await?;
         to_song_info(result, Parse::Intelligence)
     }
