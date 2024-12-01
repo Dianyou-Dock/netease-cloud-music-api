@@ -13,10 +13,20 @@ urlqstring = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 rand = "*"
-openssl = "*"
+openssl = { version = "*" ,optional = true }
 anyhow = "*"
 hex = "*"
 base64 = "*"
+cbc = {version = "0.1.2", optional = true, features = ["block-padding", "alloc"]}
+block-padding = {version="*", optional = true}
+aes = {version = "*", optional = true}
+rsa = {version = "*", optional = true}
+md5 = { version = "0.7.0", optional = true }
 
 [dev-dependencies]
 async-std = { features = ["attributes"], version = "*" }
+
+[features]
+ossl = ["openssl"]
+no_ossl = ["cbc", "block-padding", "aes", "md5", "rsa"]
+default = ["ossl"]

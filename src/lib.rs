@@ -5,6 +5,8 @@
 //
 mod encrypt;
 pub(crate) mod model;
+mod no_openssl_encrypt;
+
 use anyhow::{anyhow, Result};
 use encrypt::Crypto;
 pub use isahc::cookies::{CookieBuilder, CookieJar};
@@ -172,18 +174,18 @@ impl MusicApi {
                             url.replace("weapi", "api"),
                             QueryParams::from_map(params).json()
                         );
-                        Crypto::linuxapi(&data)
+                        Crypto.linuxapi(&data)
                     }
                     CryptoApi::Weapi => {
                         let mut params = params;
                         params.insert("csrf_token", &csrf);
-                        Crypto::weapi(&QueryParams::from_map(params).json())
+                        Crypto.weapi(&QueryParams::from_map(params).json())
                     }
                     CryptoApi::Eapi => {
                         let mut params = params;
                         params.insert("csrf_token", &csrf);
                         url = path.to_string();
-                        Crypto::eapi(
+                        Crypto.eapi(
                             "/api/song/enhance/player/url",
                             &QueryParams::from_map(params).json(),
                         )

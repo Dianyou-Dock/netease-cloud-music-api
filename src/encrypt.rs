@@ -5,13 +5,32 @@
 //
 use base64::{engine::general_purpose, Engine as _};
 use lazy_static::lazy_static;
-use openssl::hash::{hash, DigestBytes, MessageDigest};
-use openssl::rsa::{Padding, Rsa};
+
+
+#[cfg(feature = "ossl")]
+use openssl::hash::{hash, MessageDigest};
+#[cfg(feature = "ossl")]
+use openssl::rsa::{Rsa};
+#[cfg(feature = "ossl")]
 use openssl::symm::{encrypt, Cipher};
+
 use rand::rngs::OsRng;
 use rand::RngCore;
 use urlqstring::QueryParams;
-use AesMode::{cbc, ecb};
+
+#[cfg(feature = "no_ossl")]
+use aes::Aes128;
+#[cfg(feature = "no_ossl")]
+use block_padding::Pkcs7;
+#[cfg(feature = "no_ossl")]
+use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+#[cfg(feature = "no_ossl")]
+use rsa::pkcs8::DecodePublicKey;
+#[cfg(feature = "no_ossl")]
+use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
+
+#[cfg(feature = "no_ossl")]
+type Aes128CbcEnc = cbc::Encryptor<Aes128>;
 
 lazy_static! {
     static ref IV: Vec<u8> = "0102030405060708".as_bytes().to_vec();
@@ -31,6 +50,7 @@ pub enum HashType {
 }
 
 #[allow(non_camel_case_types)]
+#[derive(Clone)]
 pub enum AesMode {
     cbc,
     ecb,
@@ -38,23 +58,31 @@ pub enum AesMode {
 
 #[allow(dead_code, clippy::redundant_closure)]
 impl Crypto {
-    pub fn hex_random_bytes(n: usize) -> String {
+    pub fn hex_random_bytes(&self, n: usize) -> String {
         let mut data: Vec<u8> = Vec::with_capacity(n);
         OsRng.fill_bytes(&mut data);
         hex::encode(data)
     }
 
-    pub fn eapi(url: &str, text: &str) -> String {
+    pub fn eapi(&self, url: &str, text: &str) -> String {
         let message = format!("nobody{}use{}md5forencrypt", url, text);
-        let digest = hex::encode(hash(MessageDigest::md5(), message.as_bytes()).unwrap());
-        let data = format!("{}-36cd479b6b5-{}-36cd479b6b5-{}", url, text, digest);
-        let params = Crypto::aes_encrypt(&data, &EAPIKEY, ecb, None, |t: &Vec<u8>| {
+
+        #[cfg(feature = "ossl")]
+        let digest = hash(MessageDigest::md5(), message.as_bytes()).unwrap();
+
+        #[cfg(feature = "no_ossl")]
+        let digest = md5::compute(message.as_bytes()).0;
+
+        let digest_hex =  hex::encode(digest);
+
+        let data = format!("{}-36cd479b6b5-{}-36cd479b6b5-{}", url, text, digest_hex);
+        let params = self.aes_encrypt(&data, &EAPIKEY, AesMode::ecb, None, |t: &Vec<u8>| {
             hex::encode_upper(t)
         });
         QueryParams::from(vec![("params", params.as_str())]).stringify()
     }
 
-    pub fn weapi(text: &str) -> String {
+    pub fn weapi(&self, text: &str) -> String {
         let mut secret_key = [0u8; 16];
         OsRng.fill_bytes(&mut secret_key);
         let key: Vec<u8> = secret_key
@@ -62,15 +90,15 @@ impl Crypto {
             .map(|i| BASE62[(i % 62) as usize])
             .collect();
 
-        let params1 = Crypto::aes_encrypt(text, &PRESET_KEY, cbc, Some(&*IV), |t: &Vec<u8>| {
+        let params1 = self.aes_encrypt(text, &PRESET_KEY, AesMode::cbc, Some(&*IV), |t: &Vec<u8>| {
             general_purpose::STANDARD.encode(t)
         });
 
-        let params = Crypto::aes_encrypt(&params1, &key, cbc, Some(&*IV), |t: &Vec<u8>| {
+        let params = self.aes_encrypt(&params1, &key, AesMode::cbc, Some(&*IV), |t: &Vec<u8>| {
             general_purpose::STANDARD.encode(t)
         });
 
-        let enc_sec_key = Crypto::rsa_encrypt(
+        let enc_sec_key = self.rsa_encrypt(
             std::str::from_utf8(&key.iter().rev().copied().collect::<Vec<u8>>()).unwrap(),
             &RSA_PUBLIC_KEY,
         );
@@ -82,8 +110,8 @@ impl Crypto {
         .stringify()
     }
 
-    pub fn linuxapi(text: &str) -> String {
-        let params = Crypto::aes_encrypt(text, &LINUX_API_KEY, ecb, None, |t: &Vec<u8>| {
+    pub fn linuxapi(&self, text: &str) -> String {
+        let params = self.aes_encrypt(text, &LINUX_API_KEY, AesMode::ecb, None, |t: &Vec<u8>| {
             hex::encode(t)
         })
         .to_uppercase();
@@ -91,6 +119,23 @@ impl Crypto {
     }
 
     pub fn aes_encrypt(
+        &self,
+        data: &str,
+        key: &[u8],
+        mode: AesMode,
+        iv: Option<&[u8]>,
+        encode: fn(&Vec<u8>) -> String,
+    ) -> String {
+        #[cfg(feature = "ossl")]
+        return self.aes_encrypt_ossl(data, key, mode.clone(), iv, encode);
+
+        #[cfg(feature = "no_ossl")]
+        return self.aes_encrypt_no_ossl(data, key, mode, iv, encode);
+    }
+
+    #[cfg(feature = "ossl")]
+    pub fn aes_encrypt_ossl(
+        &self,
         data: &str,
         key: &[u8],
         mode: AesMode,
@@ -98,15 +143,66 @@ impl Crypto {
         encode: fn(&Vec<u8>) -> String,
     ) -> String {
         let cipher = match mode {
-            cbc => Cipher::aes_128_cbc(),
-            ecb => Cipher::aes_128_ecb(),
+            AesMode::cbc => Cipher::aes_128_cbc(),
+            AesMode::ecb => Cipher::aes_128_ecb(),
         };
         let cipher_text = encrypt(cipher, key, iv, data.as_bytes()).unwrap();
 
         encode(&cipher_text)
     }
 
-    pub fn rsa_encrypt(data: &str, key: &[u8]) -> String {
+    #[cfg(feature = "no_ossl")]
+    pub fn aes_encrypt_no_ossl(
+        &self,
+        data: &str,
+        key: &[u8],
+        mode: AesMode,
+        iv: Option<&[u8]>,
+        encode: fn(&Vec<u8>) -> String,
+    ) -> String {
+        let res = match mode {
+            AesMode::cbc => {
+                // iv must exist
+                self.aes_encrypt_cbc(data, key, iv.unwrap())
+            }
+            AesMode::ecb => {
+                self.aes_encrypt_ecb(data, key)
+            }
+        };
+
+        encode(&res)
+    }
+
+    #[cfg(feature = "no_ossl")]
+    fn aes_encrypt_ecb(&self, data: &str, key: &[u8]) -> Vec<u8> {
+
+        // let key = Key::from_slice(key);
+        // let iv = Iv::from_slice(vec![].as_slice());
+        let res = Aes128CbcEnc::new_from_slices(key, vec![].as_slice()).unwrap()
+            .encrypt_padded_vec_mut::<Pkcs7>(data.as_bytes());
+        res
+    }
+
+    #[cfg(feature = "no_ossl")]
+    fn aes_encrypt_cbc(&self, data: &str, key: &[u8], iv: &[u8]) -> Vec<u8> {
+        // let key = Key::from_slice(key);
+        // let iv = Iv::from_slice(iv);
+        let res = Aes128CbcEnc::new_from_slices(key, iv).unwrap()
+            .encrypt_padded_vec_mut::<Pkcs7>(data.as_bytes());
+        res
+    }
+
+
+    pub fn rsa_encrypt(&self, data: &str, key: &[u8]) -> String {
+        #[cfg(feature = "ossl")]
+        return self.rsa_encrypt_ossl(data, key);
+
+        #[cfg(feature = "no_ossl")]
+        return self.rsa_encrypt_no_ossl(data, key);
+    }
+
+    #[cfg(feature = "ossl")]
+    pub fn rsa_encrypt_ossl(&self, data: &str, key: &[u8]) -> String {
         let rsa = Rsa::public_key_from_pem(key).unwrap();
 
         let prefix = vec![0u8; 128 - data.len()];
@@ -115,19 +211,20 @@ impl Crypto {
 
         let mut buf = vec![0; rsa.size() as usize];
 
-        rsa.public_encrypt(&data, &mut buf, Padding::NONE).unwrap();
+        rsa.public_encrypt(&data, &mut buf, openssl::rsa::Padding::NONE).unwrap();
 
         hex::encode(buf)
     }
 
-    #[allow(dead_code)]
-    pub fn hash_encrypt(
-        data: &str,
-        algorithm: HashType,
-        encode: fn(DigestBytes) -> String,
-    ) -> String {
-        match algorithm {
-            HashType::md5 => encode(hash(MessageDigest::md5(), data.as_bytes()).unwrap()),
-        }
+    #[cfg(feature = "no_ossl")]
+    pub fn rsa_encrypt_no_ossl(&self, data: &str, key: &[u8]) -> String {
+        let pem = general_purpose::STANDARD.encode(key);
+        let public_key = RsaPublicKey::from_public_key_pem(&pem).unwrap();
+
+        // 使用填充方案 PKCS1v15
+        let encrypted_data = public_key.encrypt(&mut rand::thread_rng(), Pkcs1v15Encrypt, data.as_bytes()).unwrap();
+
+        hex::encode(encrypted_data)
     }
+
 }
