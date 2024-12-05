@@ -748,8 +748,7 @@ pub fn to_message(json: String) -> Result<Msg> {
         });
     }
 
-    let msg = get_val!(value, "message")?;
-    Ok(Msg { code, msg })
+    Ok(Msg { code, msg: json })
 }
 
 /// 登录信息
